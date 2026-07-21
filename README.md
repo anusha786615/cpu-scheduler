@@ -26,7 +26,7 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-**Live demo:** *(add your Streamlit Cloud URL here once deployed)*
+**Live demo:** *https://cpu-scheduler-application.streamlit.app/*
 
 ## Features
 
