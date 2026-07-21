@@ -8,14 +8,17 @@ from algorithms import fcfs, sjf, srtf, priority_scheduling, round_robin
 st.set_page_config(page_title="CPU Scheduling Simulator", page_icon="⚙️", layout="wide")
 
 # ── Session state ─────────────────────────────────────────────────────────
-if "processes" not in st.session_state:
-    st.session_state.processes = []
-
-PASTEL = {
-    "bg": "#F8F7FF",
-    "accent": "#9A8CB5",
-    "text": "#4A4E69",
+defaults = {
+    "processes": [],
+    "run_result": None,       # (result, gantt, algo_name, show_priority)
+    "best_stage": None,       # None | "collect_priorities" | "collect_quantum" | "done"
+    "best_data": None,        # list of algo result dicts
 }
+for k, v in defaults.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+
+PASTEL = {"bg": "#F8F7FF", "accent": "#9A8CB5", "text": "#4A4E69"}
 
 st.markdown(
     f"""
@@ -44,6 +47,7 @@ with st.sidebar:
     burst = st.number_input("Burst Time", min_value=1, step=1, value=1)
 
     priority_val = None
+    priority_order = "Lowest Number = High Priority"
     if algo == "Priority":
         priority_val = st.number_input("Priority", step=1, value=0)
         priority_order = st.radio(
@@ -57,21 +61,26 @@ with st.sidebar:
 
     col_a, col_b = st.columns(2)
     with col_a:
-        if st.button("➕ Add Process", use_container_width=True):
+        if st.button("➕ Add", use_container_width=True):
             if not pid.strip():
                 st.warning("PID cannot be empty.")
             elif any(p["pid"] == pid for p in st.session_state.processes):
-                st.warning(f"Process '{pid}' already exists. Use a unique PID.")
+                st.warning(f"Process '{pid}' already exists.")
             else:
                 proc = {"pid": pid.strip(), "arrival": int(arrival), "burst": int(burst)}
                 if algo == "Priority":
                     proc["priority"] = int(priority_val)
                 st.session_state.processes.append(proc)
+                st.session_state.best_stage = None
+                st.session_state.run_result = None
                 st.success(f"Process '{pid}' added.")
 
     with col_b:
         if st.button("🗑️ Clear All", use_container_width=True):
             st.session_state.processes = []
+            st.session_state.run_result = None
+            st.session_state.best_stage = None
+            st.session_state.best_data = None
             st.rerun()
 
     st.caption(f"Processes added: {len(st.session_state.processes)}")
@@ -89,15 +98,13 @@ def pid_sort_key(p):
     return [int(x) if x.isdigit() else x.lower() for x in parts]
 
 
-def render_results(result, gantt, algo_name, show_priority=False):
+def render_results(result, gantt, algo_name, show_priority=False, key_prefix=""):
     sorted_results = sorted(result, key=pid_sort_key)
     n = len(sorted_results)
-    total_wt = sum(p["waiting"] for p in sorted_results)
-    total_tat = sum(p["turnaround"] for p in sorted_results)
-    avg_wt = total_wt / n
-    avg_tat = total_tat / n
+    avg_wt = sum(p["waiting"] for p in sorted_results) / n
+    avg_tat = sum(p["turnaround"] for p in sorted_results) / n
 
-    st.markdown(f"### Results — {algo_name}")
+    st.markdown(f"#### Results — {algo_name}")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Processes", n)
     c2.metric("Avg Waiting Time", f"{avg_wt:.2f}")
@@ -124,18 +131,18 @@ def render_results(result, gantt, algo_name, show_priority=False):
         color="pid",
         orientation="h",
         text="pid",
-        title=None,
     )
     fig.update_layout(
         xaxis_title="Time",
         yaxis_title="",
         showlegend=True,
-        height=200,
+        height=180,
+        margin=dict(l=10, r=10, t=10, b=10),
         plot_bgcolor="white",
         paper_bgcolor="white",
     )
     fig.update_traces(textposition="inside")
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_{algo_name}_gantt")
 
 
 def run_all_algorithms(processes, quantum=2, priority_order="lowest"):
@@ -185,65 +192,126 @@ st.divider()
 run_col, best_col = st.columns(2)
 
 with run_col:
-    if st.button("▶ Run Scheduler", type="primary", use_container_width=True):
-        if not st.session_state.processes:
-            st.warning("No processes added.")
-        elif algo == "Select Algorithm":
-            st.warning("Please select a scheduling algorithm.")
-        else:
-            processes = st.session_state.processes
-            if algo == "FCFS":
-                result, gantt = fcfs(processes)
-            elif algo == "SJF":
-                result, gantt = sjf(processes)
-            elif algo == "SRTF":
-                result, gantt = srtf(processes)
-            elif algo == "Priority":
-                highest_is_high = priority_order == "Highest Number = High Priority"
-                result, gantt = priority_scheduling(processes, highest_is_high)
-            elif algo == "Round Robin":
-                result, gantt = round_robin(processes, int(quantum))
-            render_results(result, gantt, algo, show_priority=(algo == "Priority"))
+    run_clicked = st.button("▶ Run Scheduler", type="primary", use_container_width=True)
 
 with best_col:
-    if st.button("🏆 Find Best Algorithm", use_container_width=True):
-        if not st.session_state.processes:
-            st.warning("Please add processes first.")
-        else:
-            processes = st.session_state.processes
-            has_priorities = all("priority" in p for p in processes)
-            p_order = "lowest"
-            rr_quantum = 2
+    best_clicked = st.button("🏆 Find Best Algorithm", use_container_width=True)
 
-            with st.expander("Comparison settings", expanded=not has_priorities):
-                rr_quantum = st.number_input("Round Robin Quantum for comparison", min_value=1, value=2, key="cmp_q")
-                if not has_priorities:
-                    st.caption("Priorities aren't set for all processes — Priority Scheduling will be skipped in the comparison unless you add priorities to every process from the sidebar.")
-                else:
-                    p_order_choice = st.radio(
-                        "Priority Order for comparison",
-                        ["Lowest Number = High Priority", "Highest Number = High Priority"],
-                        key="cmp_order",
-                    )
-                    p_order = "highest" if p_order_choice == "Highest Number = High Priority" else "lowest"
+if run_clicked:
+    st.session_state.best_stage = None
+    if not st.session_state.processes:
+        st.warning("No processes added.")
+        st.session_state.run_result = None
+    elif algo == "Select Algorithm":
+        st.warning("Please select a scheduling algorithm.")
+        st.session_state.run_result = None
+    else:
+        processes = st.session_state.processes
+        if algo == "FCFS":
+            result, gantt = fcfs(processes)
+        elif algo == "SJF":
+            result, gantt = sjf(processes)
+        elif algo == "SRTF":
+            result, gantt = srtf(processes)
+        elif algo == "Priority":
+            highest_is_high = priority_order == "Highest Number = High Priority"
+            result, gantt = priority_scheduling(processes, highest_is_high)
+        elif algo == "Round Robin":
+            result, gantt = round_robin(processes, int(quantum))
+        st.session_state.run_result = (result, gantt, algo, algo == "Priority")
 
-            all_results = run_all_algorithms(processes, quantum=int(rr_quantum), priority_order=p_order)
-            all_results.sort(key=lambda x: (x["awt"], x["atat"]))
-            best = all_results[0]
+if best_clicked:
+    st.session_state.run_result = None
+    if not st.session_state.processes:
+        st.warning("Please add processes first.")
+        st.session_state.best_stage = None
+    else:
+        has_priorities = all("priority" in p for p in st.session_state.processes)
+        st.session_state.best_stage = "collect_priorities" if not has_priorities else "collect_quantum"
 
-            st.success(f"🏆 Best Algorithm: **{best['name']}**  |  Avg Waiting Time: {best['awt']:.2f}  |  Avg Turnaround Time: {best['atat']:.2f}")
+# ── Full-width results / comparison area ──────────────────────────────────
+st.divider()
 
-            st.markdown("**Comparison Table** (sorted by Average Waiting Time)")
-            comp_df = pd.DataFrame([
-                {"Rank": i + 1, "Algorithm": r["name"], "Avg Waiting Time": round(r["awt"], 2), "Avg Turnaround Time": round(r["atat"], 2)}
-                for i, r in enumerate(all_results)
-            ])
-            st.dataframe(comp_df, use_container_width=True, hide_index=True)
+if st.session_state.run_result:
+    result, gantt, algo_name, show_priority = st.session_state.run_result
+    with st.container():
+        render_results(result, gantt, algo_name, show_priority=show_priority, key_prefix="run")
 
-            st.info(f"💡 **Why is this the best?**\n\n{build_insight(best['name'])}")
+if st.session_state.best_stage == "collect_priorities":
+    st.markdown("### Set Priorities for Comparison")
+    st.caption(
+        "Priorities aren't set for all processes. Enter a priority for each process "
+        "so Priority Scheduling can be included in the comparison."
+    )
+    with st.form("priority_form"):
+        priority_inputs = {}
+        for p in st.session_state.processes:
+            priority_inputs[p["pid"]] = st.number_input(
+                f"Priority for {p['pid']}  (Arrival: {p['arrival']}, Burst: {p['burst']})",
+                step=1, value=0, key=f"pri_{p['pid']}",
+            )
+        order_choice = st.radio(
+            "Priority Order",
+            ["Lowest Number = High Priority", "Highest Number = High Priority"],
+            key="best_order_1",
+        )
+        q_val = st.number_input("Round Robin Quantum", min_value=1, value=2, key="best_q_1")
+        submitted = st.form_submit_button("Confirm & Compare")
 
-            st.markdown("**View full details for any algorithm:**")
-            tabs = st.tabs([r["name"] for r in all_results])
-            for tab, r in zip(tabs, all_results):
-                with tab:
-                    render_results(r["result"], r["gantt"], r["name"], show_priority=(r["name"] == "Priority"))
+    if submitted:
+        for p in st.session_state.processes:
+            p["priority"] = int(priority_inputs[p["pid"]])
+        p_order = "highest" if order_choice == "Highest Number = High Priority" else "lowest"
+        all_results = run_all_algorithms(st.session_state.processes, quantum=int(q_val), priority_order=p_order)
+        all_results.sort(key=lambda x: (x["awt"], x["atat"]))
+        st.session_state.best_data = all_results
+        st.session_state.best_stage = "done"
+        st.rerun()
+
+elif st.session_state.best_stage == "collect_quantum":
+    st.markdown("### Comparison Settings")
+    with st.form("quantum_form"):
+        order_choice = st.radio(
+            "Priority Order",
+            ["Lowest Number = High Priority", "Highest Number = High Priority"],
+            key="best_order_2",
+        )
+        q_val = st.number_input("Round Robin Quantum", min_value=1, value=2, key="best_q_2")
+        submitted = st.form_submit_button("Confirm & Compare")
+
+    if submitted:
+        p_order = "highest" if order_choice == "Highest Number = High Priority" else "lowest"
+        all_results = run_all_algorithms(st.session_state.processes, quantum=int(q_val), priority_order=p_order)
+        all_results.sort(key=lambda x: (x["awt"], x["atat"]))
+        st.session_state.best_data = all_results
+        st.session_state.best_stage = "done"
+        st.rerun()
+
+elif st.session_state.best_stage == "done" and st.session_state.best_data:
+    all_results = st.session_state.best_data
+    best = all_results[0]
+
+    st.success(
+        f"🏆 Best Algorithm: **{best['name']}**  |  "
+        f"Avg Waiting Time: {best['awt']:.2f}  |  Avg Turnaround Time: {best['atat']:.2f}"
+    )
+
+    st.markdown("#### Comparison Table (sorted by Average Waiting Time)")
+    comp_df = pd.DataFrame([
+        {
+            "Rank": i + 1,
+            "Algorithm": r["name"],
+            "Avg Waiting Time": round(r["awt"], 2),
+            "Avg Turnaround Time": round(r["atat"], 2),
+        }
+        for i, r in enumerate(all_results)
+    ])
+    st.dataframe(comp_df, use_container_width=True, hide_index=True)
+
+    st.info(f"💡 **Why is this the best?**\n\n{build_insight(best['name'])}")
+
+    st.markdown("#### Full details")
+    tabs = st.tabs([r["name"] for r in all_results])
+    for tab, r in zip(tabs, all_results):
+        with tab:
+            render_results(r["result"], r["gantt"], r["name"], show_priority=(r["name"] == "Priority"), key_prefix="cmp")
